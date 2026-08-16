@@ -4,19 +4,40 @@ End-to-end transaction fraud scoring pipeline handling extreme class imbalance (
 
 ## Architecture & Workflow
 
-1. **Ensemble Modeling (`notebooks/`)**
-   - Combines gradient boosted decision trees (`XGBoost`) and `Logistic Regression` models.
-   - Specifically weighted by Precision-Recall Area Under Curve (`PR-AUC`) validation performance ($W_{\text{XGB}} = 0.72, W_{\text{LR}} = 0.28$) to handle severe dataset imbalance where positive fraud instances are rare (<1%).
+1. **Ensemble Modeling (`fraud_model.py`, `notebooks/`)**
+   - Combines gradient boosted decision trees (`XGBoost`) and `Logistic Regression` models in `FraudDetectionEnsemble`.
+   - Each model is weighted by its Precision-Recall Area Under Curve (`PR-AUC`) validation performance, so the stronger model has more influence on the final score — important for handling severe class imbalance where fraud is rare (<1% of transactions).
 
-2. **Real-time Explainable Microservice (`app.py`)**
-   - Deployed as a `FastAPI` microservice accepting JSON transaction payloads (`step`, `type_code`, `amount`, origin/destination balance differentials).
-   - Calculates local `SHAP` attribution factors on the fly to return both a numeric risk score $[0, 1]$ and top contributing features for KYC/AML auditors.
+2. **Training (`train_model.py`)**
+   - The original notebook was trained on a private ~6.3M row PaySim-style CSV that isn't part of this repo.
+   - `train_model.py` generates a small synthetic dataset with the same schema and fraud patterns (fraud concentrated in `TRANSFER`/`CASH_OUT`, drained origin balances, rare positive class), trains the ensemble on it, builds a SHAP explainer, and saves everything to `models/`.
 
-## Running the API locally
+3. **Real-time Explainable Microservice (`app.py`)**
+   - A `FastAPI` service that loads the trained artifacts from `models/` and exposes `POST /kyc/score`, accepting a JSON transaction payload and returning a `0-100` risk score, a risk tier (`Low`/`Medium`/`High`/`Critical`), a recommended decision, and the top `SHAP` factors driving the score.
+
+## Running locally
 
 ```bash
 pip install -r requirements.txt
+
+# 1. Train the ensemble and save model artifacts to models/
+python train_model.py
+
+# 2. Start the API
 python app.py
 ```
 
-Check API interactive docs at `http://localhost:8080/docs`.
+Interactive docs: `http://localhost:8000/docs`
+
+Example request:
+
+```bash
+curl -X POST http://localhost:8000/kyc/score -H "Content-Type: application/json" -d '{
+  "step": 100, "amount": 95000.0, "oldbalanceOrg": 95000.0, "newbalanceOrig": 0.0,
+  "oldbalanceDest": 500.0, "newbalanceDest": 500.0, "isFlaggedFraud": 0,
+  "error_in_orig": 0.0, "error_in_rec": 94500.0, "hour": 3, "destIsMerchant": 0,
+  "day": 4, "type_TRANSFER": 1
+}'
+```
+
+Other endpoints: `GET /health`, `GET /kyc/explain/{tier}`.
